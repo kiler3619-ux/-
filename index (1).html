@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#14141f">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Мой ИИ-чат</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; }
+    body { font-family: system-ui, sans-serif; background:#14141f; color:#eee; display:flex; height:100vh; }
+    #panel { width:280px; background:#1e1e2e; padding:16px; overflow-y:auto; border-right:1px solid #333; }
+    #panel h3 { margin:12px 0 6px; font-size:13px; color:#9ab; }
+    #panel textarea, #panel select { width:100%; padding:8px; border-radius:8px; border:1px solid #444; background:#262638; color:#eee; }
+    #panel textarea { height:60px; resize:vertical; }
+    #panel label { display:block; margin-top:10px; font-size:13px; }
+    #panel input[type=checkbox] { margin-right:6px; }
+    #panel input[type=range] { width:100%; }
+    #chat { flex:1; display:flex; flex-direction:column; }
+    #msgs { flex:1; overflow-y:auto; padding:20px; }
+    .msg { max-width:75%; padding:10px 14px; border-radius:14px; margin:6px 0; white-space:pre-wrap; }
+    .user { background:#3b5bdb; margin-left:auto; }
+    .bot  { background:#2a2a3e; }
+    #bar { display:flex; padding:12px; border-top:1px solid #333; }
+    #inp { flex:1; padding:12px; border-radius:10px; border:1px solid #444; background:#262638; color:#eee; }
+    #send { margin-left:8px; padding:12px 20px; border:none; border-radius:10px; background:#3b5bdb; color:#fff; cursor:pointer; }
+    #send:disabled { opacity:.5; }
+    .hint { font-size:12px; color:#889; margin-top:8px; }
+    #clear { margin-top:14px; width:100%; padding:8px; border-radius:8px; border:1px solid #444; background:#262638; color:#eee; cursor:pointer; }
+  </style>
+</head>
+<body>
+
+<div id="panel">
+  <b>⚙️ Настройки</b>
+
+  <h3>Характер ИИ</h3>
+  <textarea id="sys">Ты дружелюбный ИИ. Отвечай по-русски, коротко и по делу.</textarea>
+
+  <h3>Модель</h3>
+  <select id="model">
+    <option value="openai">Умная (GPT)</option>
+    <option value="mistral">Альтернативная (Mistral)</option>
+  </select>
+
+  <label><input type="checkbox" id="web"> 🔍 Искать в Википедии перед ответом</label>
+  <label>Креативность: <span id="tv">0.7</span></label>
+  <input type="range" id="temp" min="0.1" max="1.5" step="0.1" value="0.7">
+  <label>Длина ответа: <span id="mv">300</span></label>
+  <input type="range" id="max" min="64" max="1024" step="32" value="300">
+
+  <button id="clear">🗑 Очистить переписку</button>
+  <div class="hint">Переписка сохраняется в браузере.</div>
+</div>
+
+<div id="chat">
+  <div id="msgs"></div>
+  <form id="bar" onsubmit="return false;">
+    <input id="inp" placeholder="Напиши сообщение..." autocomplete="off">
+    <button id="send">➤</button>
+  </form>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+let история = JSON.parse(localStorage.getItem('история') || '[]');
+$('temp').oninput = () => $('tv').textContent = $('temp').value;
+$('max').oninput  = () => $('mv').textContent = $('max').value;
+$('sys').value = localStorage.getItem('sys') || $('sys').value;
+$('sys').addEventListener('input', () => localStorage.setItem('sys', $('sys').value));
+
+function показать(кто, текст) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + кто;
+  d.textContent = текст;
+  $('msgs').appendChild(d);
+  $('msgs').scrollTop = 99999999;
+  return d;
+}
+история.forEach(m => показать(m.role === 'user' ? 'user' : 'bot', m.content));
+
+async function вики(вопрос) {
+  try {
+    const url = 'https://ru.wikipedia.org/w/api.php?action=query&format=json&origin=*' +
+      '&prop=extracts&exintro=1&explaintext=1&generator=search&gsrlimit=1&gsrsearch=' +
+      encodeURIComponent(вопрос);
+    const d = (await (await fetch(url)).json()).query?.pages || {};
+    const p = Object.values(d)[0];
+    return p && p.extract ? (p.title + ': ' + p.extract.slice(0, 600)) : '';
+  } catch (e) { return ''; }
+}
+
+async function отправить() {
+  const вопрос = $('inp').value.trim();
+  if (!вопрос) return;
+
+  показать('user', вопрос);
+  $('inp').value = '';
+  $('send').disabled = true;
+  const плашка = показать('bot', '…думаю…');
+
+  let содержимое = вопрос;
+  if ($('web').checked) {
+    const справка = await вики(вопрос);
+    if (справка) содержимое += '\n\n(Справка из Википедии: ' + справка + ')';
+  }
+
+  const сообщения = [{ role: 'system', content: $('sys').value },
+    ...история, { role: 'user', content: содержимое }];
+
+  try {
+    const r = await fetch('https://text.pollinations.ai/openai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: $('model').value,
+        messages: сообщения,
+        temperature: parseFloat($('temp').value),
+        max_tokens: parseInt($('max').value)
+      })
+    });
+    const d = await r.json();
+    const ответ = d.choices?.[0]?.message?.content?.trim()
+      || ('⚠️ ' + (d.error?.message || 'Пустой ответ'));
+    плашка.textContent = ответ;
+
+    история.push({ role: 'user', content: вопрос }, { role: 'assistant', content: ответ });
+    if (история.length > 50) история = история.slice(-50);
+    localStorage.setItem('история', JSON.stringify(история));
+  } catch (e) {
+    плашка.textContent = '⚠️ Ошибка связи: ' + e.message;
+  }
+  $('send').disabled = false;
+}
+$('send').onclick = отправить;
+$('inp').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) отправить(); });
+
+$('clear').onclick = () => {
+  история = [];
+  localStorage.removeItem('история');
+  $('msgs').innerHTML = '';
+};
+</script>
+</body>
+</html>
